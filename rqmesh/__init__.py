@@ -200,6 +200,12 @@ class RQM_OT_remesh_quadwild(bpy.types.Operator):
         dup.select_set(True); ctx.view_layer.objects.active = dup
         r = bpy.ops.object.quadriflow_remesh(target_faces=self.target_faces, use_preserve_sharp=True,
                                              use_preserve_boundary=True, use_mesh_symmetry=False)
+        names, W = skin_matrix(ob)
+        if 'FINISHED' in r and names:           # the remesh drops the weights: interpolate them from the source
+            from .core.skin import SkinField
+            Vs, Ts, _ = mesh_arrays(ob.data)
+            Vd = np.empty(len(dup.data.vertices) * 3); dup.data.vertices.foreach_get('co', Vd)
+            set_weights(dup, names, SkinField(Vs, Ts.tolist(), W).at(Vd.reshape(-1, 3)))
         self.report({'INFO'} if 'FINISHED' in r else {'ERROR'},
                     f"QuadriFlow: {len(dup.data.polygons)} faces" + (f" ({why})" if why else ""))
         return {'FINISHED'} if 'FINISHED' in r else {'CANCELLED'}
@@ -272,10 +278,7 @@ class RQM_OT_remesh_quadwild(bpy.types.Operator):
                     + (f" ({hole_info['filled_triangles']} triangle)" if hole_info['filled_triangles'] else "")
                     + (f"; {hole_info['too_big']} too large to fill" if hole_info['too_big'] else ""))
         rep += feat_note
-        nm = bpy.data.meshes.new(ob.name + "_rqmesh"); nm.from_pydata(Vq.tolist(), [], [list(map(int, f)) for f in Fq])
-        nm.update(); no = bpy.data.objects.new(nm.name, nm); no.matrix_world = ob.matrix_world.copy()
-        ctx.collection.objects.link(no)
-        ob.select_set(False); no.select_set(True); ctx.view_layer.objects.active = no   # like the other operators
+        new_object_from(ctx, ob, ob.name + "_rqmesh", Vq, Fq)          # carries materials, skin weights and rig
         info = [l for l in r.stdout.splitlines() if l.startswith('{"')]
         self.report({'INFO'}, f"{len(Fq)} faces" + (f" ({json.loads(info[-1]).get('seconds')} s)" if info else "") + rep)
         warn_modifiers(self, ob)
@@ -293,13 +296,43 @@ def poly_data(me, with_uv=True):
     return V, F, UV, FUV
 
 
-def carry_rig(src, ob, vmap):
+def skin_matrix(ob):
+    """(group names, weights n_vertices x n_groups) of a rigged mesh, or (None, None): needs vertex groups and an
+    Armature modifier, so ordinary vertex groups don't trigger joint handling."""
+    if not ob.vertex_groups or not any(m.type == 'ARMATURE' for m in ob.modifiers):
+        return None, None
+    names = [g.name for g in ob.vertex_groups]
+    W = np.zeros((len(ob.data.vertices), len(names)))
+    for v in ob.data.vertices:
+        for g in v.groups:
+            if g.group < len(names): W[v.index, g.group] = g.weight
+    return names, W
+
+
+def set_weights(ob, names, W):
+    """Vertex groups `names` of ob (made if missing, emptied if present) set to the columns of W."""
+    n = len(ob.data.vertices)
+    for j, nm in enumerate(names):
+        g = ob.vertex_groups.get(nm)
+        if g is not None: ob.vertex_groups.remove(g)
+        g = ob.vertex_groups.new(name=nm); by = {}
+        for i in np.flatnonzero(W[:n, j] > 1e-6): by.setdefault(round(float(W[i, j]), 6), []).append(int(i))
+        for w, idx in by.items(): g.add(idx, w, 'REPLACE')
+
+
+def carry_rig(src, ob, vmap, W=None):
     """Skin weights and rig of `src` onto `ob`, whose vertex i is vertex vmap[i] of src: vertex groups (exact copies,
-    no interpolation), Armature modifiers and the parent."""
+    no interpolation), Armature modifiers and the parent.  With vmap None, W gives the weights per new vertex
+    (interpolated on the source surface)."""
     sw = {}
     for v in src.data.vertices:
         if v.groups: sw[v.index] = [(g.group, g.weight) for g in v.groups]
-    if src.vertex_groups:
+    if W is not None:
+        groups = [ob.vertex_groups.new(name=g.name) for g in src.vertex_groups]
+        by = {}
+        for i, j in zip(*np.nonzero(W > 1e-6)): by.setdefault((int(j), round(float(W[i, j]), 6)), []).append(int(i))
+        for (gi, w), idx in by.items(): groups[gi].add(idx, w, 'REPLACE')
+    elif src.vertex_groups:
         groups = [ob.vertex_groups.new(name=g.name) for g in src.vertex_groups]
         by = {}
         for i, s_v in enumerate(vmap):
@@ -333,6 +366,12 @@ def new_object_from(ctx, src, name, V, F, UV=None, FUV=None, vmap=None, face_src
     ctx.collection.objects.link(ob)
     if vmap is not None:
         carry_rig(src, ob, vmap)
+    else:                       # a new surface: interpolate the skin weights from the closest point of the source
+        names, W = skin_matrix(src)
+        if names:
+            from .core.skin import SkinField
+            Vs, Ts, _ = mesh_arrays(src.data)
+            carry_rig(src, ob, None, SkinField(Vs, Ts.tolist(), W).at(np.asarray(V, float)))
     for o in ctx.selected_objects: o.select_set(False)
     ob.select_set(True); ctx.view_layer.objects.active = ob
     src.hide_set(True)
@@ -422,6 +461,12 @@ class RQM_OT_structure_simplify(bpy.types.Operator):
                                         "regions, as a modeller isolates them for sculpting and animation")
     isolation_loops: IntProperty(name="Loops", default=2, min=1, max=8,
                                  description="Edge loops kept around each opening / region, spaced at the target edge length")
+    keep_joints: BoolProperty(name="Keep joint loops", default=True,
+                              description="On a rigged mesh (vertex groups and an Armature modifier), remove the loops "
+                                          "where the skin weights blend last, so the result still bends at its joints. "
+                                          "The weights and the armature are carried to the result")
+    joint_angle: FloatProperty(name="Joint rotation", default=90.0, min=0.0, max=180.0,
+                               description="The joint rotation the result must hold up to: higher keeps more loops at the joints")
 
     @classmethod
     def poll(cls, ctx):
@@ -451,8 +496,14 @@ class RQM_OT_structure_simplify(bpy.types.Operator):
         diag = float(np.linalg.norm(V.max(0) - V.min(0)))
         local = self.local.lower()
         if local == 'auto': local = 'adaptive' if self.preset == 'ORGANIC' else 'stuck'
+        skin = None
+        if self.keep_joints:
+            names, W = skin_matrix(ob)
+            if names:
+                from .core.skin import SkinField
+                skin = SkinField(V, F, W)
         V2, F2, FUV2, UV2, info = TR.adaptive_simplify(
-            V, F, tgt, UV, FUV, feature_deg=deg, symmetry=self.symmetry.lower(), local=local,
+            V, F, tgt, UV, FUV, skin=skin, joint_deg=self.joint_angle, feature_deg=deg, symmetry=self.symmetry.lower(), local=local,
             order_hint=self.order_hint, extra_feat=extra,
             cost_mode='qem' if (self.priority == 'SHAPE' or (self.priority == 'AUTO' and self.preset != 'HARD')) else 'width',
             placement='qem' if self.placement == 'OPTIMAL' else 'surface',

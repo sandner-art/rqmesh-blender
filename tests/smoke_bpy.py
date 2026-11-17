@@ -118,9 +118,53 @@ def rig_carried(a, b, n0):
 
 
 run('rqmesh_recover_base', 2, dict(placement='SURFACE'), rig_carried, setup=skinned)
+
+
+def weights_follow(a, b, n0):
+    """Simplify makes new vertices: their weights are interpolated on the input surface, so close to the source
+    formula at the new vertex (not exact: a vertex sits a little off the input surface)."""
+    if 'Bone' not in b.vertex_groups or not any(m.type == 'ARMATURE' and m.object for m in b.modifiers): return False
+    gb = b.vertex_groups['Bone'].index
+    err = [abs(next((x.weight for x in v.groups if x.group == gb), 0.0) - max(0.0, min(1.0, 0.5 + v.co.z)))
+           for v in b.data.vertices]
+    return max(err) < 0.05
+
+
+run('rqmesh_structure_simplify', 2, dict(preset='ORGANIC', ratio=0.35, keep_joints=True), weights_follow,
+    setup=skinned)
+run('rqmesh_remesh_quadwild', 2, dict(backend='QUADRIFLOW', target_faces=1500), weights_follow, setup=skinned)
+
+
+def skinned_tube(_level, n=48, m=12):
+    """A tube along z with two bones blending over |z| < 0.1: an elbow."""
+    import math
+    V = [(0.25 * math.cos(2 * math.pi * j / m), 0.25 * math.sin(2 * math.pi * j / m), -1 + 2 * i / (n - 1))
+         for i in range(n) for j in range(m)]
+    F = [(i * m + j, i * m + (j + 1) % m, (i + 1) * m + (j + 1) % m, (i + 1) * m + j) for i in range(n - 1) for j in range(m)]
+    me = bpy.data.meshes.new('tube'); me.from_pydata(V, [], F); me.update()
+    o = bpy.data.objects.new('tube', me); bpy.context.collection.objects.link(o)
+    bpy.ops.object.armature_add(location=(0, 0, 0)); arm = bpy.context.active_object
+    ga, gb = o.vertex_groups.new(name='A'), o.vertex_groups.new(name='B')
+    for v in o.data.vertices:
+        w = max(0.0, min(1.0, (v.co.z + 0.1) / 0.2)); ga.add([v.index], 1 - w, 'REPLACE'); gb.add([v.index], w, 'REPLACE')
+    o.modifiers.new('Armature', 'ARMATURE').object = arm
+    for x in bpy.context.selected_objects: x.select_set(False)
+    o.select_set(True); bpy.context.view_layer.objects.active = o
+    return o
+
+
+loops = {}
+for keep in (False, True):
+    def count(a, b, n0, keep=keep):
+        zs = {round(v.co.z, 3) for v in b.data.vertices}; loops[keep] = (len(b.data.polygons), sum(abs(z) <= 0.15 for z in zs))
+        return True
+    run('rqmesh_structure_simplify', 0, dict(preset='HARD', ratio=0.25, keep_joints=keep), count, setup=skinned_tube)
+print('joint loops kept (faces, loops within the blend):', loops)
+if not (loops.get(True, (0, 0))[1] > loops.get(False, (0, 99))[1]): failures.append('keep_joints (no more loops kept)')
 run('rqmesh_deformation_field', 1, {}, setup=with_shape_key)
 if os.environ.get('RQM_QWLIB'):
     run('rqmesh_remesh_quadwild', 2, {}, lambda a, b, n0: b is not a and quads_only(b) and 100 < len(b.data.polygons) < n0)
+    run('rqmesh_remesh_quadwild', 2, dict(backend='QUADWILD'), weights_follow, setup=skinned)
 # the workflow panel: every plan draws, and every button points to a registered operator with valid presets
 from rqmesh import workflow as WF  # noqa: E402
 

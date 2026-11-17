@@ -424,7 +424,7 @@ def qem_line(Q, a, d, t0, t1):
 # ----------------------------------------------------------------------------- ring collapse
 def ring_collapse(V, F, target, feat_deg=8.0, bend_w=0.1, proj=None, log=None, extra_feat=None,
                   FUV=None, UV=None, mirrors=None, stats=None, cost_mode='width', size_w=0.02, max_error=None,
-                  placement='surface', quadrics=None):
+                  placement='surface', quadrics=None, skin=None, joint_deg=90.0):
     """Remove whole poly-chords until <= target faces.
     extra_feat: edges to protect besides dihedral features (UV seams, sharp marks).
     FUV, UV:    per-face UV indices into UV (welded per vertex and island).  Carried through every collapse: each rung
@@ -441,6 +441,9 @@ def ring_collapse(V, F, target, feat_deg=8.0, bend_w=0.1, proj=None, log=None, e
                 feature clusters optimized along their own line).  cost_mode 'qem' ranks rows by the RMS plane distance
                 of their merged vertices.
     quadrics:   (Q, W) per input vertex to continue from (adaptive rounds); default computed from V, F.
+    skin:       a skin.SkinField of the input: keep joint loops.  Under a pose, the two ends of a rung whose skin
+                weights differ by dw rotate apart by about joint_deg x dw, which is counted as extra bend in every
+                cost mode, so loops where the weights blend (the joints) go last (RESULTS-round16).
     Returns V, F (and FUV, UV when given), number of collapses.  stats['Q_out'] holds the carried quadrics."""
     M = Mesh(V, F)
     has_uv = FUV is not None
@@ -648,6 +651,7 @@ def ring_collapse(V, F, target, feat_deg=8.0, bend_w=0.1, proj=None, log=None, e
             nu, nv = VN[ru], VN[rv]
             cosb = np.einsum('ij,ij->i', nu, nv) / (np.linalg.norm(nu, axis=1) * np.linalg.norm(nv, axis=1) + 1e-30)
             bend = np.degrees(np.arccos(np.clip(cosb, -1, 1)))
+            pose = joint_deg * skin.dw(M.V[ru], M.V[rv]) if skin is not None else 0.0
             if cost_mode == 'qem':                # RMS plane distance of the merged vertex + small size term
                 Qs = QQ[ru] + QQ[rv]
                 fu = np.fromiter((u in fv for u in ru), bool, len(ru)); fw = np.fromiter((v in fv for v in rv), bool, len(rv))
@@ -656,11 +660,11 @@ def ring_collapse(V, F, target, feat_deg=8.0, bend_w=0.1, proj=None, log=None, e
                 x[one] = np.where(fu[one][:, None], M.V[ru[one]], M.V[rv[one]])
                 h = np.c_[x, np.ones(len(x))]
                 e = np.maximum(np.einsum('ni,nij,nj->n', h, Qs, h), 0.0) / np.maximum(QW[ru] + QW[rv], 1e-30)
-                rc = np.sqrt(e) + size_w * Lr
+                rc = np.sqrt(e) + size_w * Lr + Lr * np.radians(pose) / 8.0
             elif cost_mode == 'error':            # sagitta-like deviation of the removed row + small size term
-                rc = Lr * np.radians(bend) / 8.0 + size_w * Lr
+                rc = Lr * np.radians(bend + pose) / 8.0 + size_w * Lr
             else:
-                rc = Lr * (1 + bend_w * bend)
+                rc = Lr * (1 + bend_w * (bend + pose))
             cc = np.maximum.reduceat(rc, start); ok = np.logical_and.reduceat(okr, start)
             cands = [(round(float(cc[i]), 12), chs[i][0], chs[i][1]) for i in np.flatnonzero(ok)]
         if not cands: st['next_cost'] = float('inf'); break

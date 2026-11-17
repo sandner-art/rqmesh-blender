@@ -12,3 +12,7 @@ ids `mesh.rqmesh_*`; panel *View3D › Sidebar › RQMesh*.
 - Remesh with the optional QuadWild-BiMDF back-end; back-end manager (install from file; download in the self-hosted
   build); result becomes the active object.
 - Stored attribute names renamed to `rqmesh_*` (`rqmesh_feature`, `rqmesh_field`, `rqmesh_strain`, …).
+- Recover Base Cage: *Surface edited after subdividing* with *Levels*, and *Keep edited parts* for topology edits.
+- Rigged meshes: every tool keeps the Armature modifier, the parent and the vertex groups. Recover copies the weights
+  exactly; Simplify, Fix Poles, Quad Caps and Remesh (QuadWild and QuadriFlow) interpolate them on the source surface.
+- Simplify: *Keep joint loops* and *Joint rotation*, so game LODs of a rigged mesh keep the loops at the joints.

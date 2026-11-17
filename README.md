@@ -5,12 +5,13 @@ Structure-aware quad simplification, pole fixing and retopology for Blender 4.2 
 
 RQMesh works *with* the edge flow your mesh already has:
 
-- **Simplify by Edge Rings.** Removes whole rings of quads, with clean 3-1 or gentle transitions. The result stays all quads, and the loops around eyes, mouths and other openings are kept (*Isolation loops around*).
+- **Simplify by Edge Rings.** Removes whole rings of quads, with clean 3-1 or gentle transitions. The result stays all quads, and the loops around eyes, mouths and other openings are kept (*Isolation loops around*). On a rigged mesh it keeps the loops where the bones blend (*Keep joint loops*), so game LODs still bend well.
 - **Fix Poles.** Improves irregular vertices without breaking the rings that isolate eyes and mouths.
-- **Recover Base Cage.** Turns a mesh that was subdivided and applied (Catmull-Clark, simple, Loop or midpoint) back into its exact original cage, with creases and UVs. It still works after you sculpt or deform the subdivided mesh: enable *Surface edited after subdividing* and set *Levels*. After extrudes, insets, loop cuts or other topology changes, *Keep edited parts* recovers everything that is still a grid and keeps your changes as they are. Skin weights and the armature come along.
+- **Recover Base Cage.** Turns a mesh that was subdivided and applied (Catmull-Clark, simple, Loop or midpoint) back into its exact original cage, with creases and UVs. It still works after you sculpt or deform the subdivided mesh: enable *Surface edited after subdividing* and set *Levels*. After extrudes, insets, loop cuts or other topology changes, *Keep edited parts* recovers everything that is still a grid and keeps your changes as they are.
 - **Analyze Structure.** Tells you what kind of mesh it is. The *Workflow* box then lists the steps for your mesh in order, as buttons with the options set.
 - **Remesh (QuadWild-BiMDF).** Full quad remeshing for sculpts and scans, with the optional back-end.
 - **Also:** Quad Caps, Detect Features, Detect Symmetry, Select Poles, Select Isolation Rings, Deformation Field.
+- **Rigged models.** Every tool keeps the Armature modifier, the parent and the vertex groups: Recover copies each weight exactly, the others interpolate the weights from the original surface.
 
 Everything is in the 3D Viewport sidebar (N), on the **RQMesh** tab. Which tool to use, in which order, and why: [docs/WORKFLOW.md](docs/WORKFLOW.md).
 

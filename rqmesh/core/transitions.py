@@ -562,12 +562,13 @@ def coarsen_strips(V, F, target, feat_deg=8.0, extra_feat=(), proj=None, FUV=Non
 
 def adaptive_simplify(V, F, target, UV=None, FUV=None, feature_deg=8.0, symmetry='none', local='adaptive',
                       order_hint=False, tol0_rel=2e-4, grow=1.6, max_rel=0.05, extra_feat=None, log=None, ring_margin=3.0,
-                      cost_mode=None, max_error=None, placement='qem', transitions='31'):
-    """cost_mode: ring ranking for 'off'/'stuck' ('width' default = hard-surface behaviour of round 5); 'adaptive'
-    always ranks by estimated error.  max_error: absolute cap (stops early)."""
+                      cost_mode=None, max_error=None, placement='qem', transitions='31', skin=None, joint_deg=90.0):
     """Error ladder over global ring removal and local strips.  local: 'off' | 'stuck' | 'adaptive'.
     transitions: '31' (3-1 strips only, rounds 7-9) | 'gentle' (4-2, 5-3, 6-4 only) | 'mixed' (gentle patterns
-    first in every strip round, 3-1 only for what they cannot reach)."""
+    first in every strip round, 3-1 only for what they cannot reach).
+    cost_mode: ring ranking for 'off'/'stuck' ('width' default = hard-surface behaviour of round 5); 'adaptive'
+    always ranks by estimated error.  max_error: absolute cap (stops early).  skin: a skin.SkinField of the input to
+    keep joint loops (see structsimp.ring_collapse); joint_deg: the joint rotation the LOD must hold up to."""
     if transitions == 'auto':                       # measured (round 10): gentle-first wins at moderate targets,
         transitions = 'mixed' if target >= 0.3 * len(F) else '31'   # 3-1 keeps error lowest at aggressive ones
     info_tr = transitions
@@ -588,7 +589,7 @@ def adaptive_simplify(V, F, target, UV=None, FUV=None, feature_deg=8.0, symmetry
 
     def ring_round(max_err):
         nonlocal curV, curF, curFUV, curUV, featE, curQ
-        k = dict(feat_deg=180.0, proj=proj, extra_feat=list(featE))     # features carried from the input
+        k = dict(feat_deg=180.0, proj=proj, extra_feat=list(featE), skin=skin, joint_deg=joint_deg)
         if curQ is not None: k.update(placement='qem', quadrics=curQ)
         if curFUV is not None: k.update(FUV=curFUV, UV=curUV)
         if planes: k['mirrors'] = [SYM.mirror_map(curV, pl) for pl in planes]
