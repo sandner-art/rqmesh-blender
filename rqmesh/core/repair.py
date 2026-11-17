@@ -173,3 +173,54 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def fill_new_holes(V_in, F_in, V_out, F_out, max_edges=16, near=2.0):
+    """Fill small holes in a remesh result that the input did not have (QuadWild occasionally leaves one patch
+    unfilled).  A boundary loop of the output is 'new' when no input boundary vertex lies within `near` mean edge
+    lengths of its centroid.  Even loops get a strip of quads, odd loops quads plus one triangle.  Faces are oriented
+    against their neighbours.  Returns (F_out with fills, info)."""
+    import collections
+    V_in = np.asarray(V_in, float); V_out = np.asarray(V_out, float)
+
+    def loops_of(F):
+        cnt = collections.Counter(); dirn = {}
+        for f in F:
+            for k in range(len(f)):
+                a, b = int(f[k]), int(f[(k + 1) % len(f)])
+                cnt[min(a, b), max(a, b)] += 1; dirn[a, b] = True
+        nxt = {}
+        for (a, b), c in cnt.items():
+            if c != 1: continue
+            # the hole is walked opposite to the face that owns the edge: face has a->b, hole goes b->a
+            if (a, b) in dirn: nxt[b] = a
+            else: nxt[a] = b
+        out, seen = [], set()
+        for s in list(nxt):
+            if s in seen: continue
+            L = [s]; seen.add(s); c = nxt[s]
+            while c != s and c in nxt and c not in seen and len(L) <= len(nxt):
+                L.append(c); seen.add(c); c = nxt[c]
+            if c == s: out.append(L)
+        return out
+    bin_ = sorted({v for L in loops_of(F_in) for v in L})
+    e = [np.linalg.norm(V_out[f[k]] - V_out[f[(k + 1) % len(f)]]) for f in F_out[:2000] for k in range(len(f))]
+    h = float(np.mean(e)) if e else 1.0
+    Pin = V_in[bin_] if bin_ else np.zeros((0, 3))
+    F_new = [list(map(int, f)) for f in F_out]; info = dict(holes_new=0, filled_quads=0, filled_triangles=0, too_big=0)
+    for L in loops_of(F_out):
+        c = V_out[L].mean(0)
+        if len(Pin) and np.min(np.linalg.norm(Pin - c, axis=1)) < near * h + 0.5 * np.max(np.linalg.norm(V_out[L] - c, axis=1)):
+            continue                                       # an opening the input had
+        info['holes_new'] += 1
+        n = len(L)
+        if n > max_edges: info['too_big'] += 1; continue
+        # strip fill: quad (L0 L1 L2 L[-1]) leaves the polygon L2 .. L[-1]; repeat; 4 left -> quad, 3 -> triangle
+        faces = []
+        while len(L) > 4:
+            faces.append([L[0], L[1], L[2], L[-1]]); L = L[2:]
+        faces.append(list(L))
+        for f in faces:
+            F_new.append(f)
+            info['filled_triangles' if len(f) == 3 else 'filled_quads'] += 1
+    return F_new, info

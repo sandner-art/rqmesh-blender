@@ -227,7 +227,7 @@ def limit_operator(F, nV, sharp=None, boundary='smooth'):
 
 
 # ---------------------------------------------------------------- one level
-def unsubdivide_once(V, F, schemes=SCHEMES, iters=400, fine_sharp=None, creases=True):
+def unsubdivide_once(V, F, schemes=SCHEMES, iters=400, fine_sharp=None, creases=True, more_below=None):
     """Returns dict(V, F, scheme, residual_rel, vmap, corner_face, sharp, per_component) or None if F is not subdivided.
     vmap[i] = fine vertex that sits on base vertex i;  corner_face[b][k] = fine face holding that corner.
     fine_sharp: crease edges already known on F (from the previous level), else creases are detected when a smooth fit
@@ -364,8 +364,50 @@ def unsubdivide_once(V, F, schemes=SCHEMES, iters=400, fine_sharp=None, creases=
         return set(), res0, P0
 
     outV, outF, vmap, cface, comps, out_sharp = [], [], [], [], [], set()
+    overruled = []                                   # readings where the clear-fit rule overruled the shape prior
+
+    def peelable(c):
+        # a Catmull-Clark level above the cage is all quads and is itself a subdivision (cached on the context:
+        # contexts are rebuilt, so an id() would be reused by another one)
+        if '_peelable' not in c:
+            if any(len(f) != 4 for f in c['base']):
+                c['_peelable'] = 0
+            else:
+                lb = {v: i for i, v in enumerate(c['vb'])}
+                c['_peelable'] = 1 if labellings([[lb[v] for v in f] for f in c['base']], len(c['vb'])) is not None else 0
+        return c['_peelable']
+
+    def ngon_excess(c):
+        return round(float(np.mean([max(0, len(f) - 4) for f in c['base']])), 3)
+
+    def prior(c):
+        # inexact fits: a level that can be peeled again first, then fewer n-gons (artist cages are mostly
+        # triangles and quads; the dual of a closed cage is the usual wrong reading)
+        return (-peelable(c), ngon_excess(c))
+
+    def choose(cands, ambiguous):
+        """cands: (res, scheme, P, context, outliers, sharp, d).  An exact fit decides; otherwise the shape prior,
+        then the fit.  Under heavy edits both readings fit badly and the prior is right more often (fox, panels).
+        But the prior must not pick a reading that could not pass as a subdivision (fit > 2 LEVEL_TOL) when
+        another one fits within LEVEL_TOL: a flat grid over an n-gon model fits its true reading at 0.005-0.06,
+        and the all-quad reading the prior prefers at 0.18-0.49 (RESULTS-round14b)."""
+        ex = [t for t in cands if t[0] < 1e-4]
+        if ex:
+            return min(ex, key=lambda t: (round(t[0], 6), prior(t[3]) if ambiguous else 0, SCHEMES.index(t[1])))
+        if not ambiguous:
+            return min(cands, key=lambda t: (t[0], SCHEMES.index(t[1])))
+        pick = min(cands, key=lambda t: (prior(t[3]), round(t[0], 6), SCHEMES.index(t[1])))
+        pool = [t for t in cands if not more_below or peelable(t[3])] or cands
+        best = min(pool, key=lambda t: (t[0], SCHEMES.index(t[1])))
+        if pick[0] > 2 * LEVEL_TOL and best[0] <= LEVEL_TOL:
+            overruled.append(1); return best
+        return pick
+
     for opts in labs:
-        best = None; tried = []
+        tried = []
+        if len(opts) > 1:                             # several exact fits: the first one tried wins, so try the
+            ctx = [(prior(context(o)), k, o) for k, o in enumerate(opts)]   # likelier shape first
+            opts = [o for _, _, o in sorted(ctx, key=lambda t: (t[0], t[1]))]
         for opt in opts:
             c = context(opt)
             bsh = set()
@@ -373,28 +415,32 @@ def unsubdivide_once(V, F, schemes=SCHEMES, iters=400, fine_sharp=None, creases=
                 for (a, b), ei in c['Ev'].items():
                     m = c['fine'][ei]; va, vb_ = c['fine'][c['Vv'][a]], c['fine'][c['Vv'][b]]
                     if (min(va, m), max(va, m)) in fsh and (min(vb_, m), max(vb_, m)) in fsh: bsh.add((a, b))
+            exact = False
             for sc in schemes:
                 res, P, nout, d = fit(c, sc, bsh)
                 tried.append((res, sc, P, c, nout, bsh, d))
-                key = (round(res, 6), SCHEMES.index(sc))
-                if best is None or key < best[0]:
-                    best = (key, sc, P, c, nout, bsh, d)
-                if res < 1e-4 and nout == 0: break
-            if best[0][0] < 1e-4: break
-        if creases and fsh is None and best[0][0] > 1e-4:   # no exact smooth fit: try creases on every labelling and
-            for res, sc, P, c, nout, bsh, d in tried:        # scheme (a smooth fit can prefer the wrong labelling)
+                if res < 1e-4:
+                    exact = True
+                    if nout == 0: break
+            if exact: break
+        best = choose(tried, len(opts) > 1)
+        if creases and fsh is None and best[0] > 1e-4:     # no exact smooth fit: try creases on every labelling and
+            cands = list(tried)                            # scheme (a smooth fit can prefer the wrong labelling)
+            for res, sc, P, c, nout, bsh, d in tried:
                 if sc == 'simple': continue
                 bsh2, res2, P2 = detect(c, sc, res, P, d)
-                key = (round(res2, 6), SCHEMES.index(sc))
-                if key < best[0]: best = (key, sc, P2, c, nout, bsh2, d)
-        (res, _), sc, P, c, nout, bsh, d = best
+                if bsh2: cands.append((res2, sc, P2, c, nout, bsh2, d))
+            overruled.clear()
+            best = choose(cands, len(opts) > 1)
+        res, sc, P, c, nout, bsh, d = best
         off = len(outV); loc = {i: i + off for i in range(len(c['vb']))}
         outV.extend(P); vmap.extend(c['vb'])
         lb = {v: i for i, v in enumerate(c['vb'])}
         for f, cf in zip(c['base'], c['corner']): outF.append([lb[v] + off for v in f]); cface.append(list(cf))
         out_sharp |= {(a + off, b + off) for a, b in bsh}
         comps.append(dict(scheme=sc, residual_rel=res, outliers=nout, faces=len(c['base']), options=len(opts),
-                          creases=len(bsh)))
+                          creases=len(bsh), overruled=len(overruled)))
+        overruled.clear()
     worst = max(x['residual_rel'] for x in comps)
     scs = sorted({x['scheme'] for x in comps})
     return dict(V=np.array(outV), F=outF, vmap=vmap, corner_face=cface, scheme='+'.join(scs), residual_rel=worst,
@@ -487,11 +533,22 @@ def detect_levels(F, nV, max_levels=4, budget=24):
     return rec([list(f) for f in F], nV, 0)
 
 
-def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=0.05, schemes=SCHEMES, log=None, creases=True):
+LEVEL_TOL = 0.075   # fit residual (RMS, fine edge lengths) that a real level may have; see RESULTS-round14
+
+
+def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=LEVEL_TOL, schemes=SCHEMES, log=None, creases=True):
     """Peel up to `levels` subdivision levels (None = as many as found).  A level is kept only if its fit residual
-    (RMS, in fine edge lengths) is <= tol for the first level and <= max(0.01, 5 x previous) after that: a regular
-    designer cage is topologically "subdividable" too, but it is not a subdivision, and its residual jumps.
-    tol=None keeps every topologically valid level.  Returns dict with
+    (RMS, in fine edge lengths) is <= tol at every level.  Some hand-made cages are topologically "subdividable"
+    too (5 of 23 designer cages): unedited, peeling them gives residuals of 0.094-0.2.  Edits after subdividing
+    raise the residual of the real levels (0.1-0.5 under strong bends, sculpts and detail) and heavy smoothing
+    lowers the fake one (0.047), so on edited meshes no threshold separates them.  A fixed 0.075 added no false
+    level on 69 unedited designer-cage inputs or 133 edited meshes, and one (after 30 smoothing passes) on 76
+    held-out edited meshes.  A rule that loosened the limit after a noisy level recovered more cages on the data it
+    was tuned on (90 vs 80 of 133) but none more on held-out edits (43 vs 44 of 76), and added 4 false levels there:
+    the noisy real levels loosened it enough to pass a fake level at 0.093 (RESULTS-round14).  A false level gives
+    a wrong cage, so the default stays fixed and conservative.  tol=None keeps every
+    topologically valid level: surface edited after subdividing -- set `levels` too, since a hand-made cage under
+    the true levels may look like one more level.  Returns dict with
         cage   : (V, F)          least-squares control cage (re-subdivides to the input)
         surface: (V, F)          same faces, vertices at the input positions they correspond to (for LOD use)
         uv     : (UV, FUV) or None
@@ -506,10 +563,11 @@ def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=0.05, schemes=SCHEMES,
     cur_sharp = set()
     while levels is None or len(info) < levels:
         r = unsubdivide_once(curV, curF, schemes=schemes if not info else ('simple', 'cc'),
-                             fine_sharp=cur_sharp if info else None, creases=creases)
+                             fine_sharp=cur_sharp if info else None, creases=creases,
+                             more_below=None if levels is None else len(info) + 1 < levels)
         if r is None: break
         if tol is not None:
-            lim = tol if not info else max(0.01, 5.0 * info[-1]['residual_rel'])
+            lim = tol
             if r['residual_rel'] > lim:
                 if log: log(f"stop: level {len(info) + 1} residual {r['residual_rel']:.3f} > {lim:.3f} (not a subdivision)")
                 break
@@ -521,7 +579,8 @@ def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=0.05, schemes=SCHEMES,
         info.append(dict(scheme=r['scheme'], residual_rel=round(r['residual_rel'], 6), outliers=r['outliers'],
                          creases=len(r['sharp']), faces=len(r['F']),
                          verts=len(r['V']), components=len(r['per_component']),
-                         ambiguous=sum(c['options'] > 1 for c in r['per_component']), **uvinfo))
+                         ambiguous=sum(c['options'] > 1 for c in r['per_component']),
+                         overruled=sum(c.get('overruled', 0) > 0 for c in r['per_component']), **uvinfo))
         if log: log(f"level {len(info)}: {len(curF)} -> {len(r['F'])} faces, {r['scheme']}, residual {r['residual_rel']:.2e}")
         curV, curF = r['V'], r['F']
         if any(len(f) != 4 for f in curF): break

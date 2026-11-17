@@ -26,6 +26,7 @@ from .core import features as FT
 from .core import defofield as DF
 from .core.rosy import write_rosy
 from . import backends as BK
+from . import workflow as WF
 from bpy_extras.io_utils import ImportHelper
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,25 @@ def mesh_arrays(me):
     T = np.empty(len(me.loop_triangles) * 3, np.int64); me.loop_triangles.foreach_get('vertices', T)
     P = np.empty(len(me.loop_triangles), np.int64); me.loop_triangles.foreach_get('polygon_index', P)
     return V.reshape(-1, 3), T.reshape(-1, 3), P
+
+
+# modifiers that change what the viewport shows; RQMesh reads the base mesh, as Blender's own mesh tools do
+SHAPE_MODIFIERS = {'SUBSURF', 'MULTIRES', 'REMESH', 'DECIMATE', 'BEVEL', 'BOOLEAN', 'SOLIDIFY', 'MIRROR', 'ARRAY',
+                   'SCREW', 'SKIN', 'WELD', 'TRIANGULATE', 'WIREFRAME', 'NODES'}
+
+
+def warn_modifiers(op, ob, recover=False):
+    """Say so when the result was built from a base mesh that the viewport doesn't show as it is."""
+    mods = [m for m in ob.modifiers if m.show_viewport and m.type in SHAPE_MODIFIERS]
+    if not mods:
+        return
+    names = ", ".join(f"'{m.name}'" for m in mods)
+    if recover and any(m.type in ('SUBSURF', 'MULTIRES') for m in mods):
+        op.report({'WARNING'}, f"{ob.name} still has {names}: its base mesh is the cage already. Recover is for "
+                               f"subdivision that was applied (and maybe edited afterwards)")
+    else:
+        op.report({'WARNING'}, f"Worked on the base mesh: {names} not applied. To use the shape you see, apply "
+                               f"the modifier(s) first")
 
 
 def edge_lookup(me):
@@ -154,7 +174,7 @@ class RQM_OT_remesh_quadwild(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     target_faces: IntProperty(name="Target quads", default=3000, min=50)
-    features: EnumProperty(name="Features", items=[('MARKS', "Sharp marks", ""), ('AUTO', "Auto v2 (RQMesh)", ""),
+    features: EnumProperty(name="Features", items=[('MARKS', "Sharp marks", "Edges marked sharp; without marks: automatic features for a coarse mesh, none for a dense one"), ('AUTO', "Auto v2 (RQMesh)", ""),
                                                    ('ANGLE', "Angle", ""), ('NONE', "None", "")], default='MARKS')
     angle: FloatProperty(name="Angle", default=35.0)
     alpha: FloatProperty(name="Isometry weight (alpha)", default=0.02, min=0.0005, max=0.5,
@@ -201,17 +221,27 @@ class RQM_OT_remesh_quadwild(bpy.types.Operator):
         write_obj(inp, V, T)
         cmd = [prefs.python or sys.executable, '-I', os.path.join(HERE, 'backend', 'qw_driver.py'), qwdir, inp, out,
                '--target', str(self.target_faces), '--alpha', str(self.alpha), '--sharp', str(self.angle)]
-        if self.features == 'MARKS':
-            M = TriMesh(V, T); lut = edge_lookup(me)
+        feat_note = ""
+        features = self.features
+        if features == 'MARKS':
             sharp = me.attributes.get('sharp_edge')
             flags = np.zeros(len(me.edges), bool)
             if sharp is not None:
                 sharp.data.foreach_get('value', flags)
+            if not flags.any():
+                # no marks: a coarse, faceted mesh needs feature lines or its shape drifts; a dense sculpt does not --
+                # automatic features there add poles and folds (round 14: 211 poles / 31 folds vs 90 / 1)
+                if len(me.polygons) < self.target_faces:
+                    features = 'AUTO'; feat_note = ", no sharp marks: automatic features (coarse input)"
+                else:
+                    features = 'NONE'; feat_note = ", no sharp marks: no features (dense input)"
+        if features == 'MARKS':
+            M = TriMesh(V, T); lut = edge_lookup(me)
             mask = np.array([flags[lut[(int(a), int(b))]] if (int(a), int(b)) in lut else False for a, b in M.E])
             sp = os.path.join(tmp, 'marks.sharp'); FT.write_quadwild_sharp(M, mask, sp)
             cmd += ['--features', 'file', '--sharp-file', sp]
         else:
-            cmd += ['--features', {'AUTO': 'auto2', 'ANGLE': 'angle', 'NONE': 'none'}[self.features]]
+            cmd += ['--features', {'AUTO': 'auto2', 'ANGLE': 'angle', 'NONE': 'none'}[features]]
         if self.angular_rows > 0:
             cmd += ['--strip-theta', str(self.angular_rows)]
         if self.use_field:
@@ -227,7 +257,7 @@ class RQM_OT_remesh_quadwild(bpy.types.Operator):
         if self.repair:
             fixed = os.path.join(tmp, 'out_repaired.obj')
             rr = subprocess.run([prefs.python or sys.executable, '-I', os.path.join(HERE, 'core', 'repair.py'), inp, out,
-                                 fixed, '--feature-deg', '8' if self.features != 'NONE' else '35'],
+                                 fixed, '--feature-deg', '8' if features != 'NONE' else '35'],
                                 capture_output=True, text=True, timeout=prefs.timeout)
             if rr.returncode == 0 and os.path.exists(fixed):
                 out = fixed
@@ -235,12 +265,20 @@ class RQM_OT_remesh_quadwild(bpy.types.Operator):
                 if js:
                     d = json.loads(js[-1]); rep = f", folds {d['folds_before']} -> {d['folds_after']}"
         Vq, Fq = read_obj(out)
+        from .core import repair as RP
+        Fq, hole_info = RP.fill_new_holes(V, T, Vq, Fq)          # QuadWild can leave a patch unfilled
+        if hole_info['holes_new']:
+            rep += (f", filled {hole_info['holes_new'] - hole_info['too_big']} hole(s) the back-end left"
+                    + (f" ({hole_info['filled_triangles']} triangle)" if hole_info['filled_triangles'] else "")
+                    + (f"; {hole_info['too_big']} too large to fill" if hole_info['too_big'] else ""))
+        rep += feat_note
         nm = bpy.data.meshes.new(ob.name + "_rqmesh"); nm.from_pydata(Vq.tolist(), [], [list(map(int, f)) for f in Fq])
         nm.update(); no = bpy.data.objects.new(nm.name, nm); no.matrix_world = ob.matrix_world.copy()
         ctx.collection.objects.link(no)
         ob.select_set(False); no.select_set(True); ctx.view_layer.objects.active = no   # like the other operators
         info = [l for l in r.stdout.splitlines() if l.startswith('{"')]
         self.report({'INFO'}, f"{len(Fq)} faces" + (f" ({json.loads(info[-1]).get('seconds')} s)" if info else "") + rep)
+        warn_modifiers(self, ob)
         return {'FINISHED'}
 
 
@@ -255,7 +293,31 @@ def poly_data(me, with_uv=True):
     return V, F, UV, FUV
 
 
-def new_object_from(ctx, src, name, V, F, UV=None, FUV=None):
+def carry_rig(src, ob, vmap):
+    """Skin weights and rig of `src` onto `ob`, whose vertex i is vertex vmap[i] of src: vertex groups (exact copies,
+    no interpolation), Armature modifiers and the parent."""
+    sw = {}
+    for v in src.data.vertices:
+        if v.groups: sw[v.index] = [(g.group, g.weight) for g in v.groups]
+    if src.vertex_groups:
+        groups = [ob.vertex_groups.new(name=g.name) for g in src.vertex_groups]
+        by = {}
+        for i, s_v in enumerate(vmap):
+            for gi, w in sw.get(int(s_v), ()): by.setdefault((gi, round(w, 6)), []).append(i)
+        for (gi, w), idx in by.items(): groups[gi].add(idx, w, 'REPLACE')
+    for m in src.modifiers:
+        if m.type == 'ARMATURE':
+            nm = ob.modifiers.new(m.name, 'ARMATURE'); nm.object = m.object
+            for k in ('use_vertex_groups', 'use_bone_envelopes', 'use_deform_preserve_volume', 'use_multi_modifier'):
+                setattr(nm, k, getattr(m, k))
+    if src.parent is not None:
+        ob.parent = src.parent; ob.parent_type = src.parent_type; ob.parent_bone = src.parent_bone
+        ob.matrix_parent_inverse = src.matrix_parent_inverse.copy(); ob.matrix_basis = src.matrix_basis.copy()
+
+
+def new_object_from(ctx, src, name, V, F, UV=None, FUV=None, vmap=None, face_src=None):
+    """vmap: source vertex of each new vertex (carries weights and rig); face_src: source face of each new face
+    (carries material assignment)."""
     me = bpy.data.meshes.new(name); me.from_pydata(np.asarray(V).tolist(), [], [list(map(int, f)) for f in F])
     if UV is not None:
         lay = me.uv_layers.new(name='UVMap'); buf = np.empty(len(me.loops) * 2)
@@ -265,7 +327,12 @@ def new_object_from(ctx, src, name, V, F, UV=None, FUV=None):
         lay.data.foreach_set('uv', buf)
     me.update(); ob = bpy.data.objects.new(name, me); ob.matrix_world = src.matrix_world.copy()
     for m in src.data.materials: me.materials.append(m)
+    if face_src is not None and len(src.data.materials) > 1:
+        mi = np.empty(len(src.data.polygons), np.int64); src.data.polygons.foreach_get('material_index', mi)
+        me.polygons.foreach_set('material_index', mi[np.asarray(face_src, np.int64)])
     ctx.collection.objects.link(ob)
+    if vmap is not None:
+        carry_rig(src, ob, vmap)
     for o in ctx.selected_objects: o.select_set(False)
     ob.select_set(True); ctx.view_layer.objects.active = ob
     src.hide_set(True)
@@ -405,6 +472,7 @@ class RQM_OT_structure_simplify(bpy.types.Operator):
             msg += (" - stopped early: the remaining loops are fenced by protected lines (features, seams, symmetry"
                     " pairs) or run into triangles; try Local transitions 'When stuck'/'Adaptive' or Symmetry 'None'")
         self.report({'INFO'}, msg)
+        warn_modifiers(self, ob)
         return {'FINISHED'}
 
 
@@ -434,6 +502,7 @@ class RQM_OT_quad_caps(bpy.types.Operator):
         msg = f"{len(done)} cap(s) filled: " + ", ".join(f"{c['kind']} {c['n']}-loop -> {c['grid'][0]}x{c['grid'][1]}" for c in done)
         if odd: msg += f"; {len(odd)} skipped (odd boundary count needs a triangle)"
         self.report({'INFO'}, msg + " (UVs are not carried by this prototype)")
+        warn_modifiers(self, ob)
         return {'FINISHED'}
 
 
@@ -486,6 +555,7 @@ class RQM_OT_fix_poles(bpy.types.Operator):
         new_object_from(ctx, ob, ob.name + "_poles", V2, F2)
         self.report({'INFO'}, f"misplaced poles {p0} -> {p1}; ops: {pf.stats}. Isolated poles need loop-level edits "
                               "(see 'Select Misplaced Poles')")
+        warn_modifiers(self, ob)
         return {'FINISHED'}
 
 
@@ -570,41 +640,83 @@ class RQM_OT_recover_base(bpy.types.Operator):
     add_modifier: BoolProperty(name="Add Subdivision modifier", default=True,
                                description="Cage only: add a Subdivision Surface modifier with the detected scheme and levels")
     keep_uv: BoolProperty(name="Keep UVs", default=True)
-    tolerance: FloatProperty(name="Tolerance", default=0.05, min=0.0, max=2.0,
-                             description="Largest fit residual (in edge lengths) accepted for a level. Raise it for "
-                                         "meshes edited after subdividing; 0 = topology only")
+    edited: BoolProperty(name="Surface edited after subdividing", default=False,
+                         description="Recover the cage topology even when the surface was sculpted or deformed after "
+                                     "subdividing; the cage is fitted to the edited surface (fine detail is lost). "
+                                     "Set Levels to the number of times you subdivided: a hand-made cage can look like "
+                                     "one more level")
+    partial: BoolProperty(name="Keep edited parts", default=False,
+                          description="Peel only the parts that are still a subdivision grid. Geometry you added or cut "
+                                      "after subdividing (extrude, inset, loop cut, knife, bevel) stays as it is, "
+                                      "joined to the recovered faces by an extra vertex on each shared edge")
+    tolerance: FloatProperty(name="Tolerance", default=0.075, min=0.0, max=2.0,
+                             description="Largest fit residual (in edge lengths) accepted for a level. For a surface "
+                                         "edited after subdividing, use 'Surface edited after subdividing' with Levels "
+                                         "rather than raising this: a looser limit also accepts hand-made cages as "
+                                         "levels; 0 = topology only")
 
     @classmethod
     def poll(cls, ctx):
         return ctx.active_object is not None and ctx.active_object.type == 'MESH' and ctx.mode == 'OBJECT'
 
+    def _partial(self, ctx, ob, V, F, UV, FUV):
+        from .core import partial as PA
+        import time
+        t0 = time.time()
+        r = PA.unsubdivide_partial(V, F, levels=self.levels or 1)
+        if not r['levels']:
+            self.report({'WARNING'}, "No part of this mesh is a subdivision grid"); warn_modifiers(self, ob, recover=True)
+            return {'CANCELLED'}
+        cs = r['corner_src']
+        FUV2 = [[FUV[g][k] for g, k in c] for c in cs] if FUV is not None else None
+        nob = new_object_from(ctx, ob, ob.name + "_base", r['V'], r['F'], UV, FUV2, vmap=r['orig'],
+                              face_src=[c[0][0] for c in cs])
+        lv = r['levels']
+        nob['rqmesh_recover_base'] = json.dumps(dict(levels=lv, partial=True))
+        last = lv[-1]
+        self.report({'INFO'}, f"{len(F)} -> {len(r['F'])} faces: {len(lv)} level(s), {last['peeled']} faces recovered, "
+                              f"{last['kept']} kept as they were, {last['stitch_points']} join points, {last['scheme']}, "
+                              f"residual {max(l['residual_rel'] for l in lv):.1e} edge, {time.time() - t0:.1f} s. No "
+                              f"Subdivision modifier added: it would subdivide the kept parts again")
+        warn_modifiers(self, ob, recover=True)
+        return {'FINISHED'}
+
     def execute(self, ctx):
         from .core import subdiv as SD
         import time
         ob = ctx.active_object; V, F, UV, FUV = poly_data(ob.data, self.keep_uv)
+        if self.partial:
+            return self._partial(ctx, ob, V, F, UV, FUV)
         Q, how = SD.to_quads_if_subdivided(V, F)
         if Q is None and F and all(len(f) == 3 for f in F):   # 1-to-4 triangle subdivision (Loop, Blender Subdivide)
             from .core import subdiv_tri as STRI
-            t0 = time.time(); rt = STRI.unsubdivide_tri(V, F, levels=self.levels or None, tol=self.tolerance or None)
+            t0 = time.time(); rt = STRI.unsubdivide_tri(V, F, levels=self.levels or None, tol=None if self.edited else (self.tolerance or None))
             if rt['levels']:
                 V2, F2 = rt['cage'] if self.placement == 'CAGE' else rt['surface']
                 new_object_from(ctx, ob, ob.name + "_base", V2, F2)
                 self.report({'INFO'}, f"{len(F)} -> {len(F2)} triangles, {len(rt['levels'])} level(s) of "
                                       f"{rt['levels'][0]['scheme']} triangle subdivision, {time.time() - t0:.1f} s")
+                warn_modifiers(self, ob, recover=True)
                 return {'FINISHED'}
         if Q is None:
-            self.report({'WARNING'}, f"Not a subdivided mesh: {how}"); return {'CANCELLED'}
+            self.report({'WARNING'}, f"Not a subdivided mesh: {how}. If you changed the topology after subdividing "
+                                     f"(extrude, loop cut, ...), try 'Keep edited parts'")
+            warn_modifiers(self, ob, recover=True)
+            return {'CANCELLED'}
         if how != 'quads' and FUV is not None:
             FUV = SD.quad_uv_from_tris(Q, F, FUV)
             if FUV is None: UV = None
         t0 = time.time()
-        r = SD.unsubdivide(V, Q, levels=self.levels or None, FUV=FUV, UV=UV, tol=self.tolerance or None)
+        stops = []
+        r = SD.unsubdivide(V, Q, levels=self.levels or None, FUV=FUV, UV=UV, tol=None if self.edited else (self.tolerance or None), log=stops.append)
         if not r['levels']:
-            self.report({'WARNING'}, "Topology looks subdivided but the fit does not match (edited after "
-                                     "subdividing?): raise Tolerance to force it"); return {'CANCELLED'}
+            self.report({'WARNING'}, "Topology looks subdivided but the fit does not match: if the surface was "
+                                     "edited after subdividing, enable 'Surface edited after subdividing'")
+            warn_modifiers(self, ob, recover=True); return {'CANCELLED'}
         V2, F2 = r[{'CAGE': 'cage', 'FIT': 'fit', 'SURFACE': 'surface'}[self.placement]]
         uv = r['uv']
-        nob = new_object_from(ctx, ob, ob.name + "_base", V2, F2, uv[0] if uv else None, uv[1] if uv else None)
+        nob = new_object_from(ctx, ob, ob.name + "_base", V2, F2, uv[0] if uv else None, uv[1] if uv else None,
+                              vmap=r['orig'])
         lv = r['levels']; sch = lv[0]['scheme']
         ncr = 0
         if r.get('creases') and self.placement == 'CAGE':      # write the recovered creases (crease 1.0)
@@ -626,12 +738,30 @@ class RQM_OT_recover_base(bpy.types.Operator):
         nob['rqmesh_recover_base'] = json.dumps(dict(levels=lv, paired=how))
         deg = {}
         for f in F2: deg[len(f)] = deg.get(len(f), 0) + 1
+        res = [l['residual_rel'] for l in lv]
+        if self.edited and not self.levels:
+            # measured: with Levels set, 74 of 76 held-out edited cages were recovered; counting levels from the
+            # topology alone was right in 36 of 76, because a hand-made cage can look like one more level
+            if len(res) >= 2 and res[-1] > SD.LEVEL_TOL and res[-1] > 5 * res[-2]:
+                self.report({'WARNING'}, f"The last level fits much worse ({res[-1]:.3f} vs {res[-2]:.3f}): it may be "
+                                         f"your hand-made cage, not a subdivision. If you subdivided {len(res) - 1} "
+                                         f"time(s), undo and set Levels to {len(res) - 1}")
+            else:
+                self.report({'WARNING'}, f"Peeled {len(res)} level(s) from the topology alone. If you subdivided a "
+                                         f"different number of times, undo and set Levels to that number")
+        hint = ""
+        stops = [m for m in stops if m.startswith('stop:')]
+        if not self.edited and not self.levels and stops:   # a hand-made cage stops here too (residual 0.09-0.2)
+            hint = (f"; stopped before a loosely fitting level ({stops[-1].split('residual ')[-1].split(' (')[0]}): "
+                    f"if you subdivided more times and edited afterwards, use 'Surface edited after subdividing' "
+                    f"with Levels")
         self.report({'INFO'}, f"{len(F)} -> {len(F2)} faces ({', '.join(f'{v} {k}-gons' for k, v in sorted(deg.items()))}), "
                               f"{len(lv)} level(s), {sch}, residual {max(l['residual_rel'] for l in lv):.1e} edge, "
                               + (f"{ncr} crease edges, " if ncr else "")
                               + ("APPROXIMATE (edited after subdividing, or semi-sharp creases with Limit Surface), "
                                  if max(l['residual_rel'] for l in lv) > 1e-3 else "")
-                              + f"{time.time() - t0:.1f} s" + ("" if how == 'quads' else f"; {how}"))
+                              + f"{time.time() - t0:.1f} s" + ("" if how == 'quads' else f"; {how}") + hint)
+        warn_modifiers(self, ob, recover=True)
         return {'FINISHED'}
 
 
@@ -650,14 +780,15 @@ class RQM_OT_analyze(bpy.types.Operator):
         from .core import analyze as AN
         ob = ctx.active_object; V, F, _, _ = poly_data(ob.data, False)
         sc = AN.structure_scores(V, F); m, why = AN.recommend(sc)
-        ob['rqmesh_structure'] = json.dumps(dict(sc, method=m))
-        names = {'recover_base_first': "Recover Base Cage", 'edge_loops': "Simplify by Edge Rings (Hard surface)", 'adaptive_loops': "Simplify by Edge Rings (Organic / Adaptive)",
+        ob['rqmesh_structure'] = json.dumps(dict(sc, method=m, faces=len(ob.data.polygons)))
+        names = {'recover_base_first': "Recover Base Cage", 'recover_edited': "Recover Base Cage (surface edited)", 'edge_loops': "Simplify by Edge Rings (Hard surface)", 'adaptive_loops': "Simplify by Edge Rings (Organic / Adaptive)",
                  'decimate_or_remesh': "Blender Decimate, or Remesh (QuadWild backend)",
                  'quad_caps_first': "Quad Caps"}
         sub = f"subdivided x{sc['subdiv_levels']}, " if sc.get('subdiv_levels') else ""
         self.report({'INFO'}, sub + f"quads {sc['quad_share']:.0%}, regular {sc['regular_share']:.0%}, clean loops "
                               f"{sc['loop_share']:.0%} (length {sc['loop_len']:.2f}), regular blocks {sc['block_share']:.0%} "
                               f"-> {names[m]}: {why}")
+        warn_modifiers(self, ob)
         return {'FINISHED'}
 
 
@@ -796,26 +927,42 @@ class RQM_PT_panel(bpy.types.Panel):
     bl_label = "RQMesh"; bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = "RQMesh"
 
     def draw(self, ctx):
+        ob = ctx.active_object
+        if ob is None or ob.type != 'MESH':
+            self.layout.label(text="Select a mesh object", icon='INFO'); return
+        try:
+            analysis = json.loads(ob['rqmesh_structure']) if 'rqmesh_structure' in ob else None
+        except (ValueError, TypeError):
+            analysis = None
+        WF.draw(self.layout, ob, analysis)
+
+
+class RQM_PT_tools(bpy.types.Panel):
+    bl_label = "All Tools"; bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = "RQMesh"
+    bl_parent_id = "RQM_PT_panel"; bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, ctx):
         c = self.layout.column(align=True)
-        c.operator(RQM_OT_detect_features.bl_idname, icon='EDGESEL')
-        c.operator(RQM_OT_deformation_field.bl_idname, icon='ORIENTATION_GIMBAL')
-        c.separator(); c.operator(RQM_OT_remesh_quadwild.bl_idname, icon='MOD_REMESH')
-        c.separator(); c.label(text="Structure-first")
+        c.label(text="Inspect")
         c.operator(RQM_OT_analyze.bl_idname, icon='VIEWZOOM')
-        c.operator(RQM_OT_recover_base.bl_idname, icon='MOD_SUBSURF')
-        c.operator(RQM_OT_structure_simplify.bl_idname, icon='MOD_DECIM')
-        c.operator(RQM_OT_detect_symmetry.bl_idname, icon='MOD_MIRROR')
-        c.separator(); c.label(text="Clean-up")
-        c.operator(RQM_OT_quad_caps.bl_idname, icon='MESH_GRID')
-        c.operator(RQM_OT_fix_poles.bl_idname, icon='VERTEXSEL')
         c.operator(RQM_OT_select_poles.bl_idname, icon='RESTRICT_SELECT_OFF')
         c.operator(RQM_OT_select_isolation.bl_idname, icon='MESH_CIRCLE')
+        c.operator(RQM_OT_detect_symmetry.bl_idname, icon='MOD_MIRROR')
+        c.operator(RQM_OT_detect_features.bl_idname, icon='EDGESEL')
+        c.separator(); c.label(text="Structure-first (keeps your edge flow)")
+        c.operator(RQM_OT_recover_base.bl_idname, icon='MOD_SUBSURF')
+        c.operator(RQM_OT_quad_caps.bl_idname, icon='MESH_GRID')
+        c.operator(RQM_OT_structure_simplify.bl_idname, icon='MOD_DECIM')
+        c.operator(RQM_OT_fix_poles.bl_idname, icon='VERTEXSEL')
+        c.separator(); c.label(text="New topology (sculpts, scans)")
+        c.operator(RQM_OT_remesh_quadwild.bl_idname, icon='MOD_REMESH')
+        c.operator(RQM_OT_deformation_field.bl_idname, icon='ORIENTATION_GIMBAL')
 
 
 classes = (RQM_OT_detect_features, RQM_OT_deformation_field, RQM_OT_remesh_quadwild, RQM_OT_structure_simplify,
            RQM_OT_quad_caps, RQM_OT_fix_poles, RQM_OT_select_poles, RQM_OT_select_isolation, RQM_OT_detect_symmetry, RQM_OT_analyze, RQM_OT_recover_base,
            RQM_OT_backend_check, RQM_OT_backend_install_file, RQM_OT_backend_download, RQM_OT_backend_remove,
-           RQM_Preferences, RQM_PT_panel)
+           RQM_Preferences, RQM_PT_panel, RQM_PT_tools)
 
 
 def register():

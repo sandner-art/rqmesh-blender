@@ -68,7 +68,7 @@ def structure_scores(V, F, order_hint=True):
                 block_share=round(blocks / max(nq, 1), 4), fans=fans, ngons=ngons)
 
 
-def subdiv_scores(V, F, tol=0.05):
+def subdiv_scores(V, F, tol=SD.LEVEL_TOL):
     Q, how = SD.to_quads_if_subdivided(V, [list(f) for f in F])
     if Q is None:
         if F and all(len(f) == 3 for f in F):        # triangle subdivision (Loop / Blender Subdivide)
@@ -90,10 +90,14 @@ def recommend(s):
         return 'recover_base_first', (f"subdivided (up to {s['subdiv_levels']} level(s); first level {s.get('subdiv_scheme')}, residual "
                                       f"{s.get('subdiv_residual')}): Recover Base Cage first - the exact cage - then "
                                       f"re-analyze the cage")
+    if s.get('subdiv_topology_levels', 0) > 0:
+        return 'recover_edited', (f"the connectivity is {s['subdiv_topology_levels']} level(s) of subdivision, but the surface was "
+                                  f"edited afterwards (fit residual {s.get('subdiv_residual')}): Recover Base Cage with "
+                                  f"'Surface edited after subdividing' returns the cage topology fitted to the edits")
     if s.get('fans', 0) + s.get('ngons', 0) > 0 and s['faces'] < 20000:
         m, why = recommend(dict(s, fans=0, ngons=0))
-        return 'quad_caps_first', (f"{s['fans']} triangle fan(s) and {s['ngons']} n-gon(s): run Quad Caps first, "
-                                   f"then re-analyze (now: {why})")
+        return 'quad_caps_first', (f"{s['fans']} triangle fan(s) and {s['ngons']} n-gon(s): simplify first if you need "
+                                   f"fewer faces, then Quad Caps (fewer poles in that order; loops now: {why})")
     if s['quad_share'] < 0.9:
         return 'decimate_or_remesh', "few quads: not quad-modelled (scan, triangle export, sculpt)"
     if s['loop_share'] < 0.3 or s['loop_len'] < 0.15:

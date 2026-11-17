@@ -7,7 +7,7 @@ on:
 
 jobs:
   smoke:
-    # Blender as a Python module: 4.5 LTS (Python 3.11, the API of Blender 4.2-4.5) and 5.3 (Python 3.13)
+    # Blender as a Python module: 4.5 LTS (Python 3.11, the API of Blender 4.2-4.5), 5.2 LTS and 5.3 (Python 3.13)
     strategy:
       fail-fast: false
       matrix:
