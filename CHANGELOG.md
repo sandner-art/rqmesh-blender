@@ -16,3 +16,6 @@ ids `mesh.rqmesh_*`; panel *View3D › Sidebar › RQMesh*.
 - Rigged meshes: every tool keeps the Armature modifier, the parent and the vertex groups. Recover copies the weights
   exactly; Simplify, Fix Poles, Quad Caps and Remesh (QuadWild and QuadriFlow) interpolate them on the source surface.
 - Simplify: *Keep joint loops* and *Joint rotation*, so game LODs of a rigged mesh keep the loops at the joints.
+- Rig Hard Surface (new): armature, joint locks and rigid weights for models of rigid parts across all selected objects
+  (hinges, slides, ball joints, pistons with Damped Track), *Only show the parts*, Wire objects as joint helpers, and
+  a sub-panel with instructions. Smoke-tested on Blender 4.5, 5.2 and 5.3.

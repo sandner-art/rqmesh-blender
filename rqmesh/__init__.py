@@ -1008,12 +1008,16 @@ class RQM_PT_tools(bpy.types.Panel):
         c.separator(); c.label(text="New topology (sculpts, scans)")
         c.operator(RQM_OT_remesh_quadwild.bl_idname, icon='MOD_REMESH')
         c.operator(RQM_OT_deformation_field.bl_idname, icon='ORIENTATION_GIMBAL')
+        c.separator(); c.label(text="Rigging (machines, robots, doors)")
+        c.operator("mesh.rqmesh_rig_hard_surface", icon='ARMATURE_DATA')
 
+
+from . import rig as RIG  # noqa: E402
 
 classes = (RQM_OT_detect_features, RQM_OT_deformation_field, RQM_OT_remesh_quadwild, RQM_OT_structure_simplify,
            RQM_OT_quad_caps, RQM_OT_fix_poles, RQM_OT_select_poles, RQM_OT_select_isolation, RQM_OT_detect_symmetry, RQM_OT_analyze, RQM_OT_recover_base,
            RQM_OT_backend_check, RQM_OT_backend_install_file, RQM_OT_backend_download, RQM_OT_backend_remove,
-           RQM_Preferences, RQM_PT_panel, RQM_PT_tools)
+           RQM_Preferences, RQM_PT_panel, RQM_PT_tools, RIG.RQM_OT_rig_hard_surface, RIG.RQM_PT_rig)
 
 
 def register():

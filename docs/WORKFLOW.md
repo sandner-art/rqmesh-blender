@@ -66,6 +66,46 @@ Two limits:
 
 **A game LOD with triangles.** Blender's own **Decimate** is more accurate than any quad method. Use RQMesh when you need quads, edge loops, UV islands or symmetry kept.
 
+## Rigging hard-surface models
+
+**Rig Hard Surface** rigs a model made of rigid parts: machines, robots, lamps, doors, hatches. Select all the model's mesh objects and click it (RQMesh tab › *Rig Hard Surface*). The parts can be separate objects, separate pieces in one object, or welded into one mesh. You get:
+
+- an armature with one bone per part, named after its object, at the joint it found;
+- every object parented to it, with an Armature modifier and 100% weights, so rigid parts never bend;
+- each bone locked to its joint: a hinge bone turns about one axis only, a slide bone moves along one axis only, a ball bone turns freely in place;
+- pistons that follow: the rod and the sleeve each turn about their pin to point at the other's (Damped Track), so the piston extends when the parts move.
+
+**How it finds the joints.** Model them like this, and the rig follows:
+
+| Joint | What it looks for |
+|---|---|
+| Hinge | A cylinder pin through both parts (at least 2.5 times as long as its radius). Or a round turntable (a disc or a drum) under the part. Or two parts touching along one straight edge, like a door against its jamb. |
+| Slide | A rod entering one end of a sleeve (two cylinders on one axis). Or a panel held between two parallel rails. |
+| Ball | A sphere touching both parts, smaller than either. |
+| Piston | A rod and a sleeve, each pinned to a different part. |
+
+Small pieces that touch a part without any of these become part of it: panels, plates, bolts, greebles. The pins, balls and stubs go with the part nearer the base.
+
+**Check before you rig.** *Only Show the Parts* colours the parts it found (the `rqmesh_parts` colour attribute; set *Viewport Shading › Color › Attribute*) and reports the joints. Two parts in one colour will move together. A *free joint* means it found two large parts touching but no pin, ball or rail: the bone turns freely at their contact.
+
+**Pinning a hidden joint.** If a hinge has no visible pin (it is inside the part, or the parts just meet), add a helper:
+1. Add a cylinder through the hinge, along its axis, touching both parts (for a ball joint, a sphere at its centre).
+2. Set it to *Object Properties › Viewport Display › Display As › Wire*. Wire objects mark joints and get no weights.
+3. Select it with the model and run *Rig Hard Surface*. Hide or delete the helper afterwards.
+
+On our test lamp without pins the joints came out wrong; with three helper cylinders where the pins were, the rig was exact. The same held for the robot arm.
+
+**Measured.** We tested 37 cases: a robot arm, a desk lamp, a press, an excavator with a hydraulic cylinder, an arm on a ball joint, two doors and an airlock, each bevelled, triangulated, low-poly, joined into one object or welded. Each rig was posed with the true joint values.
+- 33 matched the true pose within 0.35% of the model's size (most to rounding).
+- The misses were models without pins and welded moving machines:
+  - the robot without pins got free joints near the right places (mean error 0.7%);
+  - the lamp without pins got wrong ones;
+  - the welded lamp and the welded excavator lost their pins in the weld.
+
+Keep parts that move as separate objects or pieces, and add helpers where a hinge is hidden.
+
+**Not yet:** joint limits (it sets no rotation ranges), telescopic square tubes, gears, chains, cables and flexible parts. The tool also stores `rqmesh_part` (a face attribute) and `rqmesh_parts` (colours) on your meshes; delete them if you don't need them.
+
 ## What not to do
 
 - **Don't simplify a mesh that was subdivided and then edited.** Edge-ring simplification needs a clean surface. After sculpting or adding detail it stopped at 2 to 16 times the cage's face count, because the noise looks like hundreds of small sharp edges. Recover the cage instead.
@@ -83,3 +123,4 @@ Two limits:
 | Quad Caps | Rebuilds fans and n-gon caps as quad grids | *Cap flatness* |
 | Remesh | QuadWild-BiMDF (optional back-end) or Blender's QuadriFlow | *Target quads*, *Features* |
 | Select Poles / Select Isolation Rings | Selects what to check | — |
+| Rig Hard Surface | Bones, joints and rigid weights for a model of rigid parts, from its pins, balls, sleeves and rails | *Only show the parts*, *Lock to the joints*, *Contact gap*, *Detail size*; Wire objects are helpers |

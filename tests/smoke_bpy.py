@@ -165,6 +165,47 @@ run('rqmesh_deformation_field', 1, {}, setup=with_shape_key)
 if os.environ.get('RQM_QWLIB'):
     run('rqmesh_remesh_quadwild', 2, {}, lambda a, b, n0: b is not a and quads_only(b) and 100 < len(b.data.polygons) < n0)
     run('rqmesh_remesh_quadwild', 2, dict(backend='QUADWILD'), weights_follow, setup=skinned)
+# Rig Hard Surface: a base, an arm on a pin, a hand on a ball, as separate objects
+def _rig_model():
+    import math
+    for o in list(bpy.data.objects): bpy.data.objects.remove(o)       # (a factory reset would unload the add-on)
+    def box(name, size, loc):
+        bpy.ops.mesh.primitive_cube_add(size=1, location=loc); o = bpy.context.active_object; o.scale = size
+        bpy.ops.object.transform_apply(scale=True); o.name = name; return o
+    objs = [box('base', (1.0, 1.0, 0.2), (0, 0, 0.1)), box('post', (0.3, 0.3, 0.8), (0, 0, 0.6)),
+            box('arm', (0.25, 0.25, 0.8), (0, 0, 1.45))]
+    bpy.ops.mesh.primitive_cylinder_add(vertices=24, radius=0.06, depth=0.6, location=(0, 0, 1.0), rotation=(math.pi / 2, 0, 0))
+    objs.append(bpy.context.active_object); objs[-1].name = 'pin'
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=12, radius=0.1, location=(0, 0, 1.9))
+    objs.append(bpy.context.active_object); objs[-1].name = 'ball'
+    objs.append(box('hand', (0.12, 0.12, 0.5), (0, 0, 2.2)))
+    for o in bpy.context.view_layer.objects: o.select_set(False)
+    for o in objs: o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    return objs
+
+
+try:
+    objs = _rig_model(); t = time.time()
+    r1 = bpy.ops.mesh.rqmesh_rig_hard_surface(preview=True)
+    ok1 = 'FINISHED' in r1 and not any(o.type == 'ARMATURE' for o in bpy.data.objects) and \
+        all('rqmesh_parts' in o.data.color_attributes for o in objs)
+    print(f"{'ok  ' if ok1 else 'FAIL'} rig hard surface: preview colours the parts, makes no rig")
+    if not ok1: failures.append('rig preview')
+    r2 = bpy.ops.mesh.rqmesh_rig_hard_surface()
+    arm = next((o for o in bpy.data.objects if o.type == 'ARMATURE'), None)
+    kinds = sorted(b['rqmesh_kind'] for b in arm.data.bones) if arm else []
+    weighted = all(any(m.type == 'ARMATURE' and m.object == arm for m in o.modifiers)
+                   and all(len(v.groups) == 1 and v.groups[0].weight == 1.0 for v in o.data.vertices) for o in objs)
+    hinge = next((arm.pose.bones[b.name] for b in arm.data.bones if b['rqmesh_kind'] == 'hinge'), None) if arm else None
+    locked = hinge is not None and sum(hinge.lock_rotation) == 2 and all(hinge.lock_location)
+    ok2 = 'FINISHED' in r2 and kinds == ['ball', 'hinge', 'root'] and weighted and locked
+    print(f"{'ok  ' if ok2 else 'FAIL'} rig hard surface: {kinds}, rigid weights {weighted}, hinge locked {locked}, "
+          f"{time.time() - t:.1f} s")
+    if not ok2: failures.append('rig hard surface')
+except Exception:
+    traceback.print_exc(); failures.append('rig hard surface raised')
+
 # the workflow panel: every plan draws, and every button points to a registered operator with valid presets
 from rqmesh import workflow as WF  # noqa: E402
 
