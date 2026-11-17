@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    # Blender as a Python module: 4.5 LTS (Python 3.11, the API of Blender 4.2-4.5) and 5.3 (Python 3.13)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: '3.11', bpy: 'bpy==4.5.*' }
+          - { python: '3.13', bpy: 'bpy==5.3.*' }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: { python-version: '${{ matrix.python }}' }
+      - name: system libraries bpy needs
+        run: sudo apt-get update && sudo apt-get install -y libxxf86vm1 libxfixes3 libxi6 libxkbcommon0 libsm6 libgl1 libegl1
+      - name: install bpy
+        run: pip install "${{ matrix.bpy }}"
+      - name: compile
+        run: python -m compileall -q rqmesh tools tests
+      - name: build
+        run: python tools/build_flavours.py rqmesh dist
+      - name: smoke test
+        run: python tests/smoke_bpy.py dist/rqmesh-*-selfhosted.zip
+
+  core-sync:
+    # informational: is rqmesh/core the same as the library's main branch?
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with: { repository: sandner-art/rqmesh, path: _rqmesh }
+      - run: python tools/sync_core.py _rqmesh
+      - run: git diff --stat --exit-code -- rqmesh/core rqmesh/backend ':!rqmesh/core/SOURCE'

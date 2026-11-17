@@ -1,0 +1,48 @@
+# On tag vX.Y.Z: build both zips, smoke-test, validate with Blender 4.5 LTS, generate the extension index
+# (index.json for "Add Remote Repository"), publish a GitHub release.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: { python-version: '3.11' }
+      - name: check the tag matches the manifest version
+        run: |
+          V=$(python -c "import tomllib; print(tomllib.load(open('rqmesh/blender_manifest.toml','rb'))['version'])")
+          [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != manifest version $V"; exit 1; }
+      - name: system libraries
+        run: sudo apt-get update && sudo apt-get install -y libxxf86vm1 libxfixes3 libxi6 libxkbcommon0 libsm6 libgl1 libegl1
+      - name: build
+        run: python tools/build_flavours.py rqmesh dist
+      - name: smoke test (Blender 4.5 LTS module)
+        run: pip install "bpy==4.5.*" && python tests/smoke_bpy.py dist/rqmesh-*-selfhosted.zip
+      - name: Blender 4.5 LTS (latest point release)
+        run: |
+          B=https://download.blender.org/release/Blender4.5/
+          F=$(curl -fsSL "$B" | grep -o 'blender-4\.5\.[0-9]*-linux-x64\.tar\.xz' | sort -uV | tail -1)
+          [ -n "$F" ] || { echo "no Blender 4.5 Linux build found at $B"; exit 1; }
+          echo "using $F"; curl -fsSL "$B$F" | tar -xJ
+          echo "BLENDER=$PWD/${F%.tar.xz}/blender" >> $GITHUB_ENV
+      - name: validate
+        run: for z in dist/*.zip; do "$BLENDER" --factory-startup --command extension validate "$z"; done
+      - name: extension index
+        run: |
+          mkdir -p repo && cp dist/rqmesh-*-selfhosted.zip repo/
+          "$BLENDER" --factory-startup --command extension server-generate --repo-dir=repo --html
+          ls -la repo
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/rqmesh-*-official.zip
+            repo/rqmesh-*-selfhosted.zip
+            repo/index.json
+            repo/index.html

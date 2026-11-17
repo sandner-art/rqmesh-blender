@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "rqmesh"
+version = "0.1.0"
+name = "RQMesh"
+tagline = "Structure-aware quad simplification, pole fixing and retopology"
+maintainer = "Daniel Sandner <134306627+sandner-art@users.noreply.github.com>"
+type = "add-on"
+website = "https://github.com/sandner-art/rqmesh-blender"
+tags = ["Mesh", "Modeling"]
+blender_version_min = "4.2.0"
+
+# The add-on is GPL-3.0-or-later; ./core is the rqmesh library, Apache-2.0 (GPL-3 compatible, licence in ./core).
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Temporary meshes and the optional back-end you install"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc", "/.git/"]
