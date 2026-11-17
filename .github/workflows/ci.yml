@@ -13,6 +13,7 @@ jobs:
       matrix:
         include:
           - { python: '3.11', bpy: 'bpy==4.5.*' }
+          - { python: '3.13', bpy: 'bpy==5.2.*' }
           - { python: '3.13', bpy: 'bpy==5.3.*' }
     runs-on: ubuntu-latest
     steps:
