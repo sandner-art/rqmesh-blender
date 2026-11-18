@@ -536,7 +536,7 @@ def detect_levels(F, nV, max_levels=4, budget=24):
 LEVEL_TOL = 0.075   # fit residual (RMS, fine edge lengths) that a real level may have; see RESULTS-round14
 
 
-def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=LEVEL_TOL, schemes=SCHEMES, log=None, creases=True):
+def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=LEVEL_TOL, schemes=SCHEMES, log=None, creases=True, trace=None):
     """Peel up to `levels` subdivision levels (None = as many as found).  A level is kept only if its fit residual
     (RMS, in fine edge lengths) is <= tol at every level.  Some hand-made cages are topologically "subdividable"
     too (5 of 23 designer cages): unedited, peeling them gives residuals of 0.094-0.2.  Edits after subdividing
@@ -575,6 +575,8 @@ def unsubdivide(V, F, levels=None, FUV=None, UV=None, tol=LEVEL_TOL, schemes=SCH
         if cur_fuv is not None:                            # cage UVs fitted on the UV mesh (seams = its boundaries)
             cur_uv, cur_fuv, uvinfo = fit_uv_level(curF, cur_fuv, cur_uv, r, limit='limit' in r['scheme'])
         orig = [orig[v] for v in r['vmap']]
+        if trace is not None:                              # per level: which fine face holds each coarse corner
+            trace.append(dict(fineF=[list(f) for f in curF], F=r['F'], vmap=r['vmap'], corner_face=r['corner_face']))
         cur_sharp = r['sharp']
         info.append(dict(scheme=r['scheme'], residual_rel=round(r['residual_rel'], 6), outliers=r['outliers'],
                          creases=len(r['sharp']), faces=len(r['F']),

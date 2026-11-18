@@ -11,6 +11,8 @@ RQMesh works *with* the edge flow your mesh already has:
 - **Analyze Structure.** Tells you what kind of mesh it is. The *Workflow* box then lists the steps for your mesh in order, as buttons with the options set.
 - **Remesh (QuadWild-BiMDF).** Full quad remeshing for sculpts and scans, with the optional back-end.
 - **Also:** Quad Caps, Detect Features, Detect Symmetry, Select Poles, Select Isolation Rings, Deformation Field.
+- **UVs from Structure.** UV maps from the recovered subdivision cage (merged seams along its loops, trim-sheet placement, straight-loop layouts, per-panel islands) or a shape-aware unwrap of a hard-surface model's parts. It also stores panel ids and coordinates, so materials can vary per panel or part.
+- **Surface Masks.** Per-vertex wear, cavity and smooth colour-variation masks that follow the model's structure, for materials in EEVEE and Cycles, with an example worn-paint material.
 - **Rig Hard Surface.** Rigs a model of rigid parts (machines, robots, doors) from its structure: hinges from pins, slides from rods in sleeves or panels in rails, ball joints from spheres, and pistons that follow their parts. One bone per part, locked to its joint, with 100% weights. A Wire cylinder marks a hidden hinge.
 - **Rigged models.** Every tool keeps the Armature modifier, the parent and the vertex groups: Recover copies each weight exactly, the others interpolate the weights from the original surface.
 

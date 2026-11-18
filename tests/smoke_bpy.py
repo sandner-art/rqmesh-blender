@@ -206,6 +206,49 @@ try:
 except Exception:
     traceback.print_exc(); failures.append('rig hard surface raised')
 
+# UVs from Structure: a subdivided cube (cage seams, straight loops) and the rig model's parts
+try:
+    import numpy as np; UL = importlib.import_module('rqmesh.core.uvlayout')
+    for o in list(bpy.data.objects): bpy.data.objects.remove(o)
+    bpy.ops.mesh.primitive_cube_add(); cube = bpy.context.active_object
+    m = cube.modifiers.new('s', 'SUBSURF'); m.levels = 2; bpy.ops.object.modifier_apply(modifier=m.name)
+    for meth in ('SEAMS', 'STRAIGHT'):
+        t = time.time(); r = bpy.ops.mesh.rqmesh_structure_uv(method=meth, demo=True)
+        me = cube.data; F = [list(p.vertices) for p in me.polygons]; V = np.array([v.co[:] for v in me.vertices])
+        uvl = me.uv_layers['RQMesh UV'].data
+        uv = [np.array([uvl[i].uv[:] for i in range(p.loop_start, p.loop_start + p.loop_total)]) for p in me.polygons]
+        mt = UL.uv_metrics(V, F, uv); pan = np.empty(len(F), np.int32); me.attributes['rqmesh_panel'].data.foreach_get('value', pan)
+        ok = 'FINISHED' in r and mt['flipped'] == 0 and mt['islands'] <= 6 and len(set(pan.tolist())) == 6 and \
+            'rqmesh_panel_uv' in me.uv_layers and (meth != 'STRAIGHT' or mt['grain_deg'] < 1e-6)
+        print(f"{'ok  ' if ok else 'FAIL'} uvs from structure {meth}: {mt['islands']} islands, seams {mt['seams']:.1f}%, "
+              f"grain {mt['grain_deg']:.2f} deg, 6 panels {len(set(pan.tolist())) == 6}, {time.time() - t:.1f} s")
+        if not ok: failures.append(f'uvs {meth}')
+    for o in list(bpy.data.objects): bpy.data.objects.remove(o)
+    bpy.ops.mesh.primitive_cube_add(); cube = bpy.context.active_object
+    m = cube.modifiers.new('s', 'SUBSURF'); m.levels = 2; bpy.ops.object.modifier_apply(modifier=m.name)
+    r = bpy.ops.mesh.rqmesh_structure_uv(method='TRIM', demo=True); me = cube.data
+    band = np.empty(len(me.polygons), np.int32); me.attributes['rqmesh_trim_band'].data.foreach_get('value', band)
+    uvl = me.uv_layers['RQMesh UV'].data; vs = np.array([uvl[i].uv[1] for i in range(len(me.loops))])
+    ok = 'FINISHED' in r and vs.min() >= -1e-6 and vs.max() <= 1 + 1e-6 and any(m.name.startswith('RQMesh trim') for m in me.materials)
+    print(f"{'ok  ' if ok else 'FAIL'} uvs from structure TRIM: bands used {sorted(set(band.tolist()))}")
+    if not ok: failures.append('uvs TRIM')
+    r = bpy.ops.mesh.rqmesh_surface_masks(material=True)
+    vals = {}
+    for nm in ('rqmesh_wear', 'rqmesh_cavity', 'rqmesh_variance', 'rqmesh_exposure', 'rqmesh_weather'):
+        x = np.empty(len(me.vertices), np.float32); me.attributes[nm].data.foreach_get('value', x); vals[nm] = (float(x.min()), float(x.max()))
+    ok = 'FINISHED' in r and all(0 <= a and b <= 1 for a, b in vals.values()) and vals['rqmesh_wear'][1] > 0.5 \
+        and me.materials[-1].name.startswith('RQMesh worn')
+    print(f"{'ok  ' if ok else 'FAIL'} surface masks: ranges {vals}")
+    if not ok: failures.append('surface masks')
+    objs = _rig_model(); bpy.ops.object.select_all(action='DESELECT')
+    o = objs[0]; bpy.context.view_layer.objects.active = o; o.select_set(True)
+    r = bpy.ops.mesh.rqmesh_structure_uv(method='PARTS')
+    ok = 'FINISHED' in r and 'RQMesh UV' in o.data.uv_layers and 'rqmesh_piece' in o.data.attributes
+    print(f"{'ok  ' if ok else 'FAIL'} uvs from structure PARTS")
+    if not ok: failures.append('uvs PARTS')
+except Exception:
+    traceback.print_exc(); failures.append('uvs from structure raised')
+
 # the workflow panel: every plan draws, and every button points to a registered operator with valid presets
 from rqmesh import workflow as WF  # noqa: E402
 

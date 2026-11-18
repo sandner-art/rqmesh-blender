@@ -66,6 +66,78 @@ Two limits:
 
 **A game LOD with triangles.** Blender's own **Decimate** is more accurate than any quad method. Use RQMesh when you need quads, edge loops, UV islands or symmetry kept.
 
+## UVs and texturing from structure
+
+**UVs from Structure** makes a new UV map, *RQMesh UV*, from what RQMesh finds in the mesh. Your other UV maps stay. *Cage seams* replaces the mesh's seams.
+
+| Method | For | What it does |
+|---|---|---|
+| **Cage seams** | Subdivided meshes (default) | Cuts along the recovered cage's loops (from its poles, creases and n-gons), merges the pieces while each stays nearly flat (*Merge up to*), then runs Blender's Unwrap. |
+| **Trim sheet** | Trim-sheet texturing | Lays every strip of quads along the loops onto the band of the trim sheet that fits its height, along u. |
+| **Straight loops** | Tiling, text along strips | Lays every patch of the cage out as a straight grid, so the texture runs exactly along the loops. Panels that aren't rectangles get stretched. |
+| **Panels** | Per-panel textures | Every cage face is its own island, at its true size. |
+| **Parts** | Hard-surface models | Cylinders are unwrapped around their axis with the seam on the inner side. Caps and other pieces are box-projected in their own frame. |
+
+The subdivided-mesh methods need an all-quad mesh made with Catmull-Clark or Simple subdivision.
+
+**Measured** against Blender's tools on the same meshes, with the same metrics:
+- **8 hard-surface panels, subdivided twice:** *Cage seams* beat Smart UV Project on every measure:
+  - seams: 2.6% vs 6.1% of edge length;
+  - islands: 6 vs 28;
+  - strongly distorted area (angle ratio above 1.25): 0.1% vs 7.8%;
+  - texel-density spread: 3 times tighter.
+- **Organic models:** merging makes *Cage seams* better than Smart UV Project here too.
+  - Suzanne and a stacked model: islands 26 vs 42 on average (Suzanne 47 vs 72); seams 6.7% vs 8.0%; distorted area 0% vs 23%.
+  - A model whose cage is mostly triangles (our fox): 2 islands vs 39; distorted area 0.1% vs 26%; slightly more seam length (10.1% vs 8.7%).
+- **11 hard-surface models of rigid parts:** *Parts* beat Smart UV Project:
+  - seams: 23% vs 28%;
+  - islands: 29 vs 39;
+  - distorted area: 0.3% vs 8.4%;
+  - density spread: 5 times tighter.
+- *Straight loops* and *Trim sheet* keep the loops straight in UV. The cost is distortion: 43% of the area is above 1.25 on the panels, more on organic models. Use them where straight grain matters more than even texels.
+
+**Trim sheets.**
+1. Set *Trim bands* to your sheet's band heights from the top, as fractions of the sheet (default `0.5 0.25 0.125 0.125`).
+2. Run the tool. Each strip goes to the band closest to its height, scaled to fill that band, and starts at a random point along it, so repeats don't line up. With *Join strips* (on by default), neighbouring strips join where together they fit a taller band better.
+3. The band of every face is stored in `rqmesh_trim_band`. Use it to give each band its own colour or material in a shader, or to assign material slots.
+
+The sheet's size is chosen so the median strip keeps its true texel density. Joining strips halved the error on our 11 test meshes: area-weighted median 0.35 stops instead of 0.61 (1.27 times instead of 1.53), 90th percentile 0.73 instead of 1.04. One model whose cap fans made strips of very different heights stayed at 2.3 stops. *Add a variation material* puts a procedural trim sheet on the model to check the placement.
+
+**Panel data for materials.** With *Store panel data* on, subdivided meshes get:
+- `rqmesh_panel`: a face attribute holding the cage face each face came from;
+- `rqmesh_panel_uv`: the position inside that panel (0–1 on quads), which also appears as a UV map.
+
+*Parts* stores `rqmesh_piece` instead, and *Rig Hard Surface* stores `rqmesh_part`. In a material:
+- **Variation per panel or part:** *Attribute* → *White Noise* (1D) gives a random colour, roughness or wear amount for each panel or part. This also works inside one welded mesh, which Blender's *Random Per Island* can't split.
+- **Panel edges:** *UV Map* (`rqmesh_panel_uv`) → *Separate XYZ* → min(u, 1−u, v, 1−v) gives the distance to the panel's border, for panel lines, gaps and dirt.
+
+Geometry Nodes can read the same attributes.
+
+## Wear, dirt and colour variation
+
+**Surface Masks** stores three per-vertex masks, 0 to 1, for materials and Geometry Nodes. They work in EEVEE as well as Cycles (Cycles' *Pointiness* is Cycles-only):
+
+| Mask | Where it is high |
+|---|---|
+| `rqmesh_wear` | The most convex edges, where paint wears off. *Wear* sets the share of the surface by area (default 8%). |
+| `rqmesh_cavity` | The deepest creases, where dirt collects. *Cavity* sets the share; a convex model may have none. |
+| `rqmesh_variance` | A smooth colour variation. |
+| `rqmesh_exposure` | How open each point is to its surroundings, within *Exposure radius* (default 15% of the model's size). It is ambient occlusion: on our 6 test models it matched Cycles' own AO bake at 0.87–0.97 correlation, in about the same time. |
+| `rqmesh_weather` | Open *and* facing up, where sun and rain fade paint. |
+
+**How the variation is made.** On a subdivided mesh it is built through the recovered levels: random values at the cage's corners, then every new edge and face point takes the average of its parents plus a smaller random change. The variation therefore follows the panels and loops, and is continuous everywhere. *Variation detail* sets how much the finer levels add: 0 gives only large, smooth changes. On other meshes the random values are spread over the surface instead.
+
+**Example material.** *Add a worn-paint material* builds paint that:
+- varies with `rqmesh_variance`;
+- darkens with `rqmesh_cavity`;
+- wears to bare metal where `rqmesh_wear` is high, broken up by the variation.
+
+With *Exposure* on (the default), exposed edges wear more, hidden places darken like dirt, and surfaces facing the weather fade. It also adds a slight tint per part when part ids exist.
+
+**Measured.** At the default 8%, wear covered 7–10% of the area on our 11 test meshes (14% on one).
+
+**Limits.** The masks live on vertices, so they need vertices near the edges: subdivided or bevelled meshes. On a plain low-poly box, use Blender's *Bevel* or *Ambient Occlusion* shader nodes instead.
+
 ## Rigging hard-surface models
 
 **Rig Hard Surface** rigs a model made of rigid parts: machines, robots, lamps, doors, hatches. Select all the model's mesh objects and click it (RQMesh tab › *Rig Hard Surface*). The parts can be separate objects, separate pieces in one object, or welded into one mesh. You get:
@@ -123,4 +195,6 @@ Keep parts that move as separate objects or pieces, and add helpers where a hing
 | Quad Caps | Rebuilds fans and n-gon caps as quad grids | *Cap flatness* |
 | Remesh | QuadWild-BiMDF (optional back-end) or Blender's QuadriFlow | *Target quads*, *Features* |
 | Select Poles / Select Isolation Rings | Selects what to check | — |
+| UVs from Structure | A UV map from the recovered cage (merged seams, trim sheet, straight loops, panels) or a shape-aware unwrap of parts; panel ids and coordinates for materials | *Method*, *Merge up to*, *Trim bands*, *Store panel data*, *Add a variation material* |
+| Surface Masks | Wear, cavity and smooth variation masks for materials | *Wear*, *Cavity*, *Variation detail*, *Add a worn-paint material* |
 | Rig Hard Surface | Bones, joints and rigid weights for a model of rigid parts, from its pins, balls, sleeves and rails | *Only show the parts*, *Lock to the joints*, *Contact gap*, *Detail size*; Wire objects are helpers |

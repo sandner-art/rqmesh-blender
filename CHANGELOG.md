@@ -19,3 +19,11 @@ ids `mesh.rqmesh_*`; panel *View3D › Sidebar › RQMesh*.
 - Rig Hard Surface (new): armature, joint locks and rigid weights for models of rigid parts across all selected objects
   (hinges, slides, ball joints, pistons with Damped Track), *Only show the parts*, Wire objects as joint helpers, and
   a sub-panel with instructions. Smoke-tested on Blender 4.5, 5.2 and 5.3.
+- UVs from Structure (new): UV map 'RQMesh UV' by cage seams (with Blender's Unwrap), straight loops, panels, or a
+  shape-aware part unwrap; panel data 'rqmesh_panel' and 'rqmesh_panel_uv'; an optional variation material.
+- UVs from Structure: cage seams merge flat pieces (*Merge up to*); new *Trim sheet* method with *Trim bands*, the band
+  in 'rqmesh_trim_band', and a procedural trim sheet for checking.
+- Surface Masks (new): 'rqmesh_wear', 'rqmesh_cavity', 'rqmesh_variance' (through the cage's levels on subdivided
+  meshes), and an optional worn-paint material.
+- Trim sheet: *Join strips* (adjacent strips fill taller bands). Surface Masks: 'rqmesh_exposure' (ambient
+  occlusion, NumPy) and 'rqmesh_weather' (open and facing up), used by the worn-paint material.
